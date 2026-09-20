@@ -30,7 +30,7 @@ def run_dummy_server():
     server.serve_forever()
 
 # Configuration
-BOT_TOKEN = "8899684696:AAG4Q6gVjlafKL5D7RUMPj2pmPnG-QlfFy4"
+BOT_TOKEN = "8806387746:AAFQ8tQBLUBrE1psC5-jYJ18Aw8tTA0pzk8"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
@@ -215,13 +215,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 # Main Function
-def main():
-    # Start Dummy Web Server
-    Thread(target=run_dummy_server, daemon=True).start()
-
+async def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("addbalance", add_balance))
@@ -234,7 +230,15 @@ def main():
     app.add_handler(CommandHandler("adminhelp", admin_help))
 
     logging.info("Bot started successfully...")
-    app.run_polling(drop_pending_updates=True)
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        await asyncio.Event().wait()
+
+def main():
+    Thread(target=run_dummy_server, daemon=True).start()
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
     main()
