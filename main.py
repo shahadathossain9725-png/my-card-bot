@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import os
+import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,20 +30,137 @@ def run_dummy_server():
     logging.info(f"Dummy HTTP server listening on port {port}")
     server.serve_forever()
 
-# Configuration (Updated with your new token)
+# Configuration
 BOT_TOKEN = "8806387746:AAEVNVLEClAJ-7lHy8GfESUwC8q-VoYR-Wc"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
-# Memory Database
-user_balances = {}       
-card_stock = {}          
-user_states = {}  # Track user search state
-settings = {
-    "price": 30.0,
-    "bkash": "নম্বর সেট করা হয়নি",
-    "nagad": "নম্বর সেট করা হয়নি"
-}
+# Database Initialization
+DB_FILE = "bot_data.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # User Balances Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0.0
+        )
+    ''')
+    # Card Stock Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bin TEXT,
+            card_details TEXT
+        )
+    ''')
+    # Settings Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    # Default settings insert
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price', '30.0')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bkash', 'নম্বর সেট করা হয়নি')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('nagad', 'নম্বর সেট করা হয়নি')")
+    conn.commit()
+    conn.close()
+
+# Database Helper Functions
+def get_user_balance(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row is None:
+        cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, 0.0)", (user_id,))
+        conn.commit()
+        bal = 0.0
+    else:
+        bal = row[0]
+    conn.close()
+    return bal
+
+def update_user_balance(user_id, amount_change):
+    current = get_user_balance(user_id)
+    new_bal = current + amount_change
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_bal, user_id))
+    conn.commit()
+    conn.close()
+    return new_bal
+
+def get_setting(key):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else ""
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE settings SET value = ? WHERE key = ?", (str(value), key))
+    conn.commit()
+    conn.close()
+
+def get_cards_by_bin(bin_num):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, card_details FROM cards WHERE bin = ?", (bin_num,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_all_bins():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT bin, COUNT(*) FROM cards GROUP BY bin")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def add_single_card(bin_num, card_details):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO cards (bin, card_details) VALUES (?, ?)", (bin_num, card_details))
+    conn.commit()
+    conn.close()
+
+def pop_cards(bin_num, qty):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, card_details FROM cards WHERE bin = ? LIMIT ?", (bin_num, qty))
+    rows = cursor.fetchall()
+    
+    delivered = []
+    ids_to_delete = []
+    for r in rows:
+        ids_to_delete.append(r[0])
+        delivered.append(r[1])
+        
+    if ids_to_delete:
+        cursor.execute(f"DELETE FROM cards WHERE id IN ({','.join(['?']*len(ids_to_delete))})", ids_to_delete)
+        conn.commit()
+    conn.close()
+    return delivered
+
+def delete_bin_stock(bin_num):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM cards WHERE bin = ?", (bin_num,))
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+user_states = {}
 
 # ----------------- USER COMMANDS -----------------
 
@@ -50,8 +168,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
-    if user_id not in user_balances:
-        user_balances[user_id] = 0.0
+    balance = get_user_balance(user_id)
+    price = get_setting("price")
 
     keyboard = [
         [InlineKeyboardButton("🔍 Search BIN / Stock & Buy", callback_data="start_search_bin")],
@@ -64,8 +182,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 হ্যালো {user.first_name}!\n\n"
         f"আমাদের অটোমেটেড ফেসবুক এডস কার্ড বটে স্বাগতম।\n"
         f"এখানে আপনি বিভিন্ন BIN-এর কার্ড অটোমেটিক কিনতে পারবেন।\n\n"
-        f"📌 **প্রতি কার্ডের বর্তমান মূল্য:** {settings['price']} BDT\n"
-        f"💳 **আপনার বর্তমান ব্যালেন্স:** {user_balances[user_id]} BDT\n"
+        f"📌 **প্রতি কার্ডের বর্তমান মূল্য:** {price} BDT\n"
+        f"💳 **আপনার বর্তমান ব্যালেন্স:** {balance} BDT\n"
         f"🆔 **আপনার ইউজার আইডি:** `{user_id}`"
     )
 
@@ -82,15 +200,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "my_balance":
-        bal = user_balances.get(user_id, 0.0)
+        bal = get_user_balance(user_id)
         await query.message.reply_text(f"💰 **আপনার বর্তমান ব্যালেন্স:** {bal} BDT\n🆔 **আপনার আইডি:** `{user_id}`", parse_mode="Markdown")
 
     elif query.data == "add_balance_info":
+        bkash = get_setting("bkash")
+        nagad = get_setting("nagad")
         payment_text = (
             f"➕ **ব্যালেন্স অ্যাড করার নিয়ম:**\n\n"
             f"নিচের বিকাশ বা নগদ নম্বরে টাকা সেন্ড মানি করুন:\n"
-            f"📱 **বিকাশ (Bkash):** `{settings['bkash']}`\n"
-            f"📱 **নগদ (Nagad):** `{settings['nagad']}`\n\n"
+            f"📱 **বিকাশ (Bkash):** `{bkash}`\n"
+            f"📱 **নগদ (Nagad):** `{nagad}`\n\n"
             f"টাকা পাঠানোর পর এডমিনকে (@{ADMIN_USERNAME}) আপনার ইউজার আইডি (`{user_id}`) এবং ট্রানজেকশন আইডি পাঠিয়ে ব্যালেন্স অ্যাড করে নিন।"
         )
         await query.message.reply_text(payment_text, parse_mode="Markdown")
@@ -108,14 +228,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "show_all_stock":
-        if not card_stock:
+        bins = get_all_bins()
+        if not bins:
             await query.message.reply_text("📦 বর্তমানে কোনো কার্ড স্টকে নেই।")
             return
 
         keyboard = []
-        for bin_num, cards in card_stock.items():
-            if len(cards) > 0:
-                keyboard.append([InlineKeyboardButton(f"🔹 BIN {bin_num} ({len(cards)} টি আছে)", callback_data=f"checkbin_{bin_num}")])
+        for bin_num, count in bins:
+            if count > 0:
+                keyboard.append([InlineKeyboardButton(f"🔹 BIN {bin_num} ({count} টি আছে)", callback_data=f"checkbin_{bin_num}")])
 
         if not keyboard:
             await query.message.reply_text("📦 বর্তমানে সকল BIN-এর স্টক খালি।")
@@ -133,13 +254,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bin_num = parts[1]
         qty = int(parts[2])
 
-        if bin_num not in card_stock or len(card_stock[bin_num]) < qty:
+        cards = get_cards_by_bin(bin_num)
+        if len(cards) < qty:
             await query.message.reply_text("❌ দুঃখিত, কাঙ্ক্ষিত পরিমাণের কার্ড বর্তমানে স্টকে নেই।")
             return
 
-        price_per_card = settings["price"]
+        price_per_card = float(get_setting("price"))
         total_cost = price_per_card * qty
-        current_bal = user_balances.get(user_id, 0.0)
+        current_bal = get_user_balance(user_id)
 
         if current_bal < total_cost:
             await query.message.reply_text(
@@ -151,20 +273,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        user_balances[user_id] -= total_cost
-
-        delivered_cards = []
-        for _ in range(qty):
-            delivered_cards.append(card_stock[bin_num].pop(0))
-
+        update_user_balance(user_id, -total_cost)
+        delivered_cards = pop_cards(bin_num, qty)
         cards_text = "\n".join([f"`{c}`" for c in delivered_cards])
+        rem_bal = get_user_balance(user_id)
 
         await query.message.reply_text(
             f"🎉 **কার্ড ক্রয় সফল হয়েছে! ({qty} টি)**\n\n"
             f"📌 **BIN:** `{bin_num}`\n"
             f"💳 **কার্ডসমূহ:**\n{cards_text}\n\n"
             f"💰 **মোট খরচ:** {total_cost} BDT\n"
-            f"💳 **অবশিষ্ট ব্যালেন্স:** {user_balances[user_id]} BDT\n\n"
+            f"💳 **অবশিষ্ট ব্যালেন্স:** {rem_bal} BDT\n\n"
             f"ধন্যবাদ আমাদের পরিষেবা ব্যবহার করার জন্য!",
             parse_mode="Markdown"
         )
@@ -179,15 +298,16 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_bin_check(update.message, user_id, bin_num)
 
 async def process_bin_check(message_obj, user_id, bin_num):
-    if bin_num not in card_stock or len(card_stock[bin_num]) == 0:
+    cards = get_cards_by_bin(bin_num)
+    if not cards:
         await message_obj.reply_text(
             f"❌ **দুঃখিত!** BIN `{bin_num}`-এর কোনো কার্ড বর্তমানে স্টকে এভেলেবেল নেই।",
             parse_mode="Markdown"
         )
         return
 
-    available_qty = len(card_stock[bin_num])
-    price_per_card = settings["price"]
+    available_qty = len(cards)
+    price_per_card = float(get_setting("price"))
 
     qty_options = [1, 2, 3, 5, 10]
     keyboard = []
@@ -227,8 +347,8 @@ async def add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(context.args[0])
         amount = float(context.args[1])
-        user_balances[target_id] = user_balances.get(target_id, 0.0) + amount
-        await update.message.reply_text(f"✅ ইউজার `{target_id}`-এর একাউন্টে {amount} BDT যোগ করা হয়েছে। নতুন ব্যালেন্স: {user_balances[target_id]} BDT", parse_mode="Markdown")
+        new_bal = update_user_balance(target_id, amount)
+        await update.message.reply_text(f"✅ ইউজার `{target_id}`-এর একাউন্টে {amount} BDT যোগ করা হয়েছে। নতুন ব্যালেন্স: {new_bal} BDT", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ আইডি বা অ্যামাউন্ট ভুল দেওয়া হয়েছে।")
 
@@ -240,29 +360,48 @@ async def add_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     bin_num = context.args[0]
     card_details = " ".join(context.args[1:])
-    if bin_num not in card_stock:
-        card_stock[bin_num] = []
-    card_stock[bin_num].append(card_details)
-    await update.message.reply_text(f"✅ ১টি কার্ড যোগ করা হয়েছে!\n📌 **BIN:** `{bin_num}`\n📦 মোট কার্ড: {len(card_stock[bin_num])} টি", parse_mode="Markdown")
+    add_single_card(bin_num, card_details)
+    total_count = len(get_cards_by_bin(bin_num))
+    await update.message.reply_text(f"✅ ১টি কার্ড যোগ করা হয়েছে!\n📌 **BIN:** `{bin_num}`\n📦 মোট কার্ড: {total_count} টি", parse_mode="Markdown")
 
 async def add_cards_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-    lines = [line.strip() for line in update.message.text.strip().split('\n') if line.strip()]
+    
+    full_text = update.message.text.strip()
+    lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+    
     first_line_parts = lines[0].split()
     if len(first_line_parts) < 2:
-        await update.message.reply_text("⚠️ নিয়ম:\n`/addcards <BIN>`\n`card1|MM|YY|CVC`\n`card2|MM|YY|CVC`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "⚠️ **বাল্ক কার্ড এড করার সঠিক নিয়ম:**\n\n"
+            "`/addcards 414720`\n"
+            "`4147200000000000|05|28|123`\n"
+            "`4147200000000001|05|28|124`", 
+            parse_mode="Markdown"
+        )
         return
-    bin_num = first_line_parts[1]
-    card_lines = lines[1:]
-    if not card_lines:
-        await update.message.reply_text("⚠️ কমান্ডের নিচের লাইনগুলোতে কার্ড প্রদান করুন।")
+    
+    bin_num = first_line_parts[1].strip()
+    cards_to_add = lines[1:]
+    
+    if not cards_to_add:
+        await update.message.reply_text("⚠️ প্রথম লাইনের নিচে কোনো কার্ডের বিবরণ দেওয়া হয়নি।")
         return
-    if bin_num not in card_stock:
-        card_stock[bin_num] = []
-    for card in card_lines:
-        card_stock[bin_num].append(card)
-    await update.message.reply_text(f"✅ সফলভাবে **{len(card_lines)}** টি কার্ড যোগ করা হয়েছে!\n📌 **BIN:** `{bin_num}`\n📦 বর্তমান মোট স্টক: {len(card_stock[bin_num])} টি", parse_mode="Markdown")
+
+    added_count = 0
+    for card in cards_to_add:
+        if card:
+            add_single_card(bin_num, card)
+            added_count += 1
+
+    total_count = len(get_cards_by_bin(bin_num))
+    await update.message.reply_text(
+        f"✅ **সফলভাবে {added_count} টি কার্ড যোগ করা হয়েছে!**\n\n"
+        f"📌 **BIN:** `{bin_num}`\n"
+        f"📦 **বর্তমান মোট স্টক:** {total_count} টি", 
+        parse_mode="Markdown"
+    )
 
 async def clear_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -271,9 +410,9 @@ async def clear_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ নিয়ম: `/clearstock <BIN>`", parse_mode="Markdown")
         return
     bin_num = context.args[0]
-    if bin_num in card_stock:
-        del card_stock[bin_num]
-        await update.message.reply_text(f"🗑️ BIN `{bin_num}`-এর সকল কার্ড ডিলিট করা হয়েছে।", parse_mode="Markdown")
+    count = delete_bin_stock(bin_num)
+    if count > 0:
+        await update.message.reply_text(f"🗑️ BIN `{bin_num}`-এর সকল ({count} টি) কার্ড ডিলিট করা হয়েছে।", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ এই BIN-এ কোনো কার্ড পাওয়া যায়নি।")
 
@@ -285,7 +424,7 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         new_price = float(context.args[0])
-        settings["price"] = new_price
+        set_setting("price", str(new_price))
         await update.message.reply_text(f"✅ কার্ডের নতুন মূল্য সেট করা হয়েছে: **{new_price} BDT**", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ সঠিক সংখ্যা লিখুন।")
@@ -296,8 +435,9 @@ async def set_bkash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 1:
         await update.message.reply_text("⚠️ নিয়ম: `/setbkash <NUMBER>`", parse_mode="Markdown")
         return
-    settings["bkash"] = context.args[0]
-    await update.message.reply_text(f"✅ বিকাশ নম্বর সেট করা হয়েছে: `{settings['bkash']}`", parse_mode="Markdown")
+    num = context.args[0]
+    set_setting("bkash", num)
+    await update.message.reply_text(f"✅ বিকাশ নম্বর সেট করা হয়েছে: `{num}`", parse_mode="Markdown")
 
 async def set_nagad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -305,8 +445,9 @@ async def set_nagad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 1:
         await update.message.reply_text("⚠️ নিয়ম: `/setnagad <NUMBER>`", parse_mode="Markdown")
         return
-    settings["nagad"] = context.args[0]
-    await update.message.reply_text(f"✅ নগদ নম্বর সেট করা হয়েছে: `{settings['nagad']}`", parse_mode="Markdown")
+    num = context.args[0]
+    set_setting("nagad", num)
+    await update.message.reply_text(f"✅ নগদ নম্বর সেট করা হয়েছে: `{num}`", parse_mode="Markdown")
 
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -315,7 +456,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠️ **এডমিন কন্ট্রোল প্যানেল কমান্ডসমূহ:**\n\n"
         "💰 **ইউজার ব্যালেন্স যোগ করতে:**\n`/addbalance <USER_ID> <AMOUNT>`\n\n"
         "💳 **একটি কার্ড যোগ করতে:**\n`/addcard <BIN> <CARD_DETAILS>`\n\n"
-        "📦 **একসাথে একাধিক কার্ড যোগ করতে:**\n`/addcards <BIN>`\n`card1`\n`card2`\n\n"
+        "📦 **একসাথে একাধিক (Bulk) কার্ড যোগ করতে:**\n`/addcards <BIN>`\n`card1|MM|YY|CVC`\n`card2|MM|YY|CVC`\n\n"
         "🗑️ **কোনো BIN-এর সব স্টক ডিলিট করতে:**\n`/clearstock <BIN>`\n\n"
         "🏷️ **কার্ডের দাম পরিবর্তন করতে:**\n`/setprice <AMOUNT>`\n\n"
         "📱 **বিকাশ নম্বর দিতে:**\n`/setbkash <NUMBER>`\n\n"
@@ -325,6 +466,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main Function
 async def run_bot():
+    init_db()  # Initialize SQLite Database
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -339,7 +481,7 @@ async def run_bot():
     app.add_handler(CommandHandler("setnagad", set_nagad))
     app.add_handler(CommandHandler("adminhelp", admin_help))
 
-    logging.info("Bot started successfully...")
+    logging.info("Bot started successfully with Persistent Database...")
     async with app:
         await app.initialize()
         await app.start()
