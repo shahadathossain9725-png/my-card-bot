@@ -31,7 +31,7 @@ def run_dummy_server():
     server.serve_forever()
 
 # Bot Configuration
-BOT_TOKEN = "8806387746:AAEVNVLEClAJ-7lHy8GfESUwC8q-VoYR-Wc"
+BOT_TOKEN = "8806387746:AAE76xYUc0bq5Nmcbrf3TnTwHrAvJGJOEvI"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
@@ -373,7 +373,7 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "method": state_info.get("method"),
                     "amount": amount
                 }
-                await update.message.reply_text(f"📝 **আপনার পেমেন্টের TrxID (ট্রানজেকশন আইডি) টি পাঠাতুন:**", parse_mode="Markdown")
+                await update.message.reply_text(f"📝 **আপনার পেমেন্টের TrxID (ট্রানজেকশন আইডি) টি পাঠান:**", parse_mode="Markdown")
             except ValueError:
                 await update.message.reply_text("❌ ভুল পরিমাণ! দয়া করে সঠিক সংখ্যা লিখুন (যেমন: 200)।")
 
