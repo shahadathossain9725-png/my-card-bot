@@ -6,7 +6,7 @@ from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes
+    MessageHandler, filters, ContextTypes
 )
 
 # Logging Setup
@@ -37,6 +37,7 @@ ADMIN_ID = 7624991230
 # Memory Database
 user_balances = {}       
 card_stock = {}          
+user_states = {}  # Track user search state
 settings = {
     "price": 30.0,
     "bkash": "নম্বর সেট করা হয়নি",
@@ -53,7 +54,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_balances[user_id] = 0.0
 
     keyboard = [
-        [InlineKeyboardButton("🔍 Search BIN / Stock", callback_data="check_stock_user")],
+        [InlineKeyboardButton("🔍 Search BIN / Stock & Buy", callback_data="start_search_bin")],
         [InlineKeyboardButton("💰 My Balance", callback_data="my_balance"), InlineKeyboardButton("➕ Add Balance Info", callback_data="add_balance_info")],
         [InlineKeyboardButton("👤 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME}")]
     ]
@@ -64,7 +65,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"আমাদের অটোমেটেড ফেসবুক এডস কার্ড বটে স্বাগতম।\n"
         f"এখানে আপনি বিভিন্ন BIN-এর কার্ড অটোমেটিক কিনতে পারবেন।\n\n"
         f"📌 **প্রতি কার্ডের বর্তমান মূল্য:** {settings['price']} BDT\n"
-        f"💳 **আপনার বর্তমান ব্যালেন্স:** {user_balances[user_id]} BDT"
+        f"💳 **আপনার বর্তমান ব্যালেন্স:** {user_balances[user_id]} BDT\n"
+        f"🆔 **আপনার ইউজার আইডি:** `{user_id}`"
     )
 
     if update.message:
@@ -81,7 +83,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "my_balance":
         bal = user_balances.get(user_id, 0.0)
-        await query.message.reply_text(f"💰 **আপনার বর্তমান ব্যালেন্স:** {bal} BDT", parse_mode="Markdown")
+        await query.message.reply_text(f"💰 **আপনার বর্তমান ব্যালেন্স:** {bal} BDT\n🆔 **আপনার আইডি:** `{user_id}`", parse_mode="Markdown")
 
     elif query.data == "add_balance_info":
         payment_text = (
@@ -93,16 +95,128 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(payment_text, parse_mode="Markdown")
 
-    elif query.data == "check_stock_user":
+    elif query.data == "start_search_bin":
+        user_states[user_id] = "WAITING_FOR_BIN"
+        keyboard = [[InlineKeyboardButton("📦 বর্তমান সব স্টক একসাথে দেখুন", callback_data="show_all_stock")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            "🔍 **যে BIN-এর কার্ড খুঁজতে চান তা মেসেজে টাইপ করে পাঠান:**\n"
+            "(উদাহরণ: `414720`)\n\n"
+            "অথবা সব স্টক একবারে দেখতে নিচের বাটনে চাপ দিন:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+
+    elif query.data == "show_all_stock":
         if not card_stock:
             await query.message.reply_text("📦 বর্তমানে কোনো কার্ড স্টকে নেই।")
             return
 
-        text = f"📦 **বর্তমান স্টক তালিকা (প্রতি কার্ড {settings['price']} BDT):**\n\n"
+        keyboard = []
         for bin_num, cards in card_stock.items():
-            text += f"🔹 **BIN:** `{bin_num}` ➔ {len(cards)} টি উপলব্ধ\n"
+            if len(cards) > 0:
+                keyboard.append([InlineKeyboardButton(f"🔹 BIN {bin_num} ({len(cards)} টি আছে)", callback_data=f"checkbin_{bin_num}")])
 
-        await query.message.reply_text(text, parse_mode="Markdown")
+        if not keyboard:
+            await query.message.reply_text("📦 বর্তমানে সকল BIN-এর স্টক খালি।")
+            return
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text("📦 **বর্তমান উপলব্ধ BIN স্টক তালিকা:**\nপছন্দের BIN-টিতে চাপ দিন:", reply_markup=reply_markup)
+
+    elif query.data.startswith("checkbin_"):
+        bin_num = query.data.split("_")[1]
+        await process_bin_check(query.message, user_id, bin_num)
+
+    elif query.data.startswith("buy_"):
+        # Format: buy_BIN_QTY
+        parts = query.data.split("_")
+        bin_num = parts[1]
+        qty = int(parts[2])
+
+        if bin_num not in card_stock or len(card_stock[bin_num]) < qty:
+            await query.message.reply_text("❌ দুঃখিত, কাঙ্ক্ষিত পরিমাণের কার্ড বর্তমানে স্টকে নেই।")
+            return
+
+        price_per_card = settings["price"]
+        total_cost = price_per_card * qty
+        current_bal = user_balances.get(user_id, 0.0)
+
+        if current_bal < total_cost:
+            await query.message.reply_text(
+                f"❌ **পর্যাপ্ত ব্যালেন্স নেই!**\n\n"
+                f"📊 **প্রয়োজনীয় ব্যালেন্স:** {total_cost} BDT ({qty} টি কার্ডের জন্য)\n"
+                f"💳 **আপনার বর্তমান ব্যালেন্স:** {current_bal} BDT\n\n"
+                f"টাকা রিচার্জ করতে **Add Balance Info** মেনু দেখুন।",
+                parse_mode="Markdown"
+            )
+            return
+
+        # Deduct balance
+        user_balances[user_id] -= total_cost
+
+        # Deliver cards
+        delivered_cards = []
+        for _ in range(qty):
+            delivered_cards.append(card_stock[bin_num].pop(0))
+
+        cards_text = "\n".join([f"`{c}`" for c in delivered_cards])
+
+        await query.message.reply_text(
+            f"🎉 **কার্ড ক্রয় সফল হয়েছে! ({qty} টি)**\n\n"
+            f"📌 **BIN:** `{bin_num}`\n"
+            f"💳 **কার্ডসমূহ:**\n{cards_text}\n\n"
+            f"💰 **মোট খরচ:** {total_cost} BDT\n"
+            f"💳 **অবশিষ্ট ব্যালেন্স:** {user_balances[user_id]} BDT\n\n"
+            f"ধন্যবাদ আমাদের পরিষেবা ব্যবহার করার জন্য!",
+            parse_mode="Markdown"
+        )
+
+async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    # Check if user was expected to input BIN
+    if user_states.get(user_id) == "WAITING_FOR_BIN":
+        user_states[user_id] = None  # Reset state
+        bin_num = text.split()[0]
+        await process_bin_check(update.message, user_id, bin_num)
+
+async def process_bin_check(message_obj, user_id, bin_num):
+    if bin_num not in card_stock or len(card_stock[bin_num]) == 0:
+        await message_obj.reply_text(
+            f"❌ **দুঃখিত!** BIN `{bin_num}`-এর কোনো কার্ড বর্তমানে স্টকে এভেলেবেল নেই।",
+            parse_mode="Markdown"
+        )
+        return
+
+    available_qty = len(card_stock[bin_num])
+    price_per_card = settings["price"]
+
+    # Option buttons for quantity (1, 2, 3, 5, 10)
+    qty_options = [1, 2, 3, 5, 10]
+    keyboard = []
+    row = []
+
+    for q in qty_options:
+        if q <= available_qty:
+            row.append(InlineKeyboardButton(f"🛒 {q} টি কিনুন ({q * price_per_card} BDT)", callback_data=f"buy_{bin_num}_{q}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+    if row:
+        keyboard.append(row)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await message_obj.reply_text(
+        f"✅ **BIN {bin_num} এভেলেবেল আছে!**\n\n"
+        f"📦 **বর্তমানে স্টকে আছে:** {available_qty} টি\n"
+        f"📌 **প্রতিটি কার্ডের মূল্য:** {price_per_card} BDT\n\n"
+        f"👇 **আপনি কয়টি কার্ড কিনতে চান সিলেক্ট করুন:**",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
 
 # ----------------- ADMIN COMMANDS -----------------
 
@@ -220,6 +334,7 @@ async def run_bot():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_text))
     app.add_handler(CommandHandler("addbalance", add_balance))
     app.add_handler(CommandHandler("addcard", add_card))
     app.add_handler(CommandHandler("addcards", add_cards_bulk))
