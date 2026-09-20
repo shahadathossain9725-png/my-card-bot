@@ -29,8 +29,8 @@ def run_dummy_server():
     logging.info(f"Dummy HTTP server listening on port {port}")
     server.serve_forever()
 
-# Configuration
-BOT_TOKEN = "8806387746:AAFQ8tQBLUBrE1psC5-jYJ18Aw8tTA0pzk8"
+# Configuration (Updated with your new token)
+BOT_TOKEN = "8806387746:AAEVNVLEClAJ-7lHy8GfESUwC8q-VoYR-Wc"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
@@ -129,7 +129,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_bin_check(query.message, user_id, bin_num)
 
     elif query.data.startswith("buy_"):
-        # Format: buy_BIN_QTY
         parts = query.data.split("_")
         bin_num = parts[1]
         qty = int(parts[2])
@@ -152,10 +151,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Deduct balance
         user_balances[user_id] -= total_cost
 
-        # Deliver cards
         delivered_cards = []
         for _ in range(qty):
             delivered_cards.append(card_stock[bin_num].pop(0))
@@ -176,9 +173,8 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # Check if user was expected to input BIN
     if user_states.get(user_id) == "WAITING_FOR_BIN":
-        user_states[user_id] = None  # Reset state
+        user_states[user_id] = None
         bin_num = text.split()[0]
         await process_bin_check(update.message, user_id, bin_num)
 
@@ -193,7 +189,6 @@ async def process_bin_check(message_obj, user_id, bin_num):
     available_qty = len(card_stock[bin_num])
     price_per_card = settings["price"]
 
-    # Option buttons for quantity (1, 2, 3, 5, 10)
     qty_options = [1, 2, 3, 5, 10]
     keyboard = []
     row = []
