@@ -35,7 +35,7 @@ BOT_TOKEN = "8806387746:AAEVNVLEClAJ-7lHy8GfESUwC8q-VoYR-Wc"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
-# Database Connection (Neon PostgreSQL or Fallback)
+# Database Connection (Neon PostgreSQL or Fallback SQLite)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
@@ -100,6 +100,14 @@ def update_user_balance(user_id, amount_change):
     conn.commit()
     conn.close()
     return new_bal
+
+def get_all_user_ids():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
 
 def get_setting(key):
     conn = get_db_connection()
@@ -446,6 +454,40 @@ async def process_bin_check(message_obj, user_id, bin_num):
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("⚠️ নিয়ম: `/broadcast <আপনার এনাউন্সমেন্ট মেসেজ>`", parse_mode="Markdown")
+        return
+
+    message_text = " ".join(context.args)
+    user_ids = get_all_user_ids()
+    
+    await update.message.reply_text(f"⏳ **{len(user_ids)} জন ইউজারের কাছে এনাউন্সমেন্ট পাঠানো শুরু হচ্ছে...**", parse_mode="Markdown")
+
+    success = 0
+    failed = 0
+
+    for u_id in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=u_id,
+                text=f"📢 **এনাউন্সমেন্ট / নোটিশ:**\n\n{message_text}",
+                parse_mode="Markdown"
+            )
+            success += 1
+            await asyncio.sleep(0.05) # Rate limit avoidance
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(
+        f"✅ **ব্রডকাস্ট সম্পন্ন হয়েছে!**\n\n"
+        f"📩 **সফল:** {success} জন\n"
+        f"❌ **ব্যর্থ:** {failed} জন",
+        parse_mode="Markdown"
+    )
+
 async def add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -550,6 +592,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     help_text = (
         "🛠️ **এডমিন কন্ট্রোল প্যানেল:**\n\n"
+        "📢 **সব ইউজারকে এনাউন্সমেন্ট মেসেজ দিতে:**\n`/broadcast <মেসেজ>`\n\n"
         "📱 **বিকাশ নম্বর সেট করতে:**\n`/setbkash <NUMBER>`\n\n"
         "📱 **নগদ নম্বর সেট করতে:**\n`/setnagad <NUMBER>`\n\n"
         "💰 **ম্যানুয়ালি ব্যালেন্স দিতে:**\n`/addbalance <USER_ID> <AMOUNT>`\n\n"
@@ -570,6 +613,7 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_text))
+    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("addbalance", add_balance))
     app.add_handler(CommandHandler("addcards", add_cards_bulk))
     app.add_handler(CommandHandler("clearstock", clear_stock))
