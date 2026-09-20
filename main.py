@@ -31,7 +31,7 @@ def run_dummy_server():
     server.serve_forever()
 
 # CONFIGURATION (NEW TOKEN UPDATED)
-BOT_TOKEN = "8899684696:AAEMYZYg_9qR-csUPcZosdbU1mu7WBfgN8Q"
+BOT_TOKEN = "8571682512:AAFbQSpWhplSLDNAg9a9WNNszTeJx5ZDnYI"
 ADMIN_USERNAME = "Trusted_zone_1122"
 ADMIN_ID = 7624991230
 
